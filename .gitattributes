@@ -1,0 +1,12 @@
+runs/
+data/
+checkpoints/
+posterior/
+__pycache__/
+*.pyc
+*.odb
+*.cae
+*.jnl
+*.lck
+*.simdir/
+*.joblib

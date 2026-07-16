@@ -1,0 +1,34 @@
+# Dataset generation config for generative-model training
+# Units: a,b in mm; E1,E2 sampled as multiples of 1e11 Pa (convert to MPa for Abaqus)
+
+abaqus_cmd: abaqus
+# Prefer a local non-synced copy if you have one; fallback used for this machine:
+master_cae: D:\python_run_package\test_run\master_model.cae
+local_cae_name: master_model.cae
+
+# Output layout
+samples_dir: samples
+runs_dir: samples/runs
+dataset_dir: dataset
+script_inp: abaqus_run_single.py
+script_extract: extract_odb.py
+
+# LHS sampling (uniform priors, Table 6 primary ranges)
+n_samples: 200
+seed: 42
+bounds:
+  a:  [290.0, 310.0]   # mm
+  b:  [20.0,  30.0]    # mm
+  E1: [0.5,   0.9]     # x 1e11 Pa
+  E2: [0.5,   0.9]     # x 1e11 Pa
+
+# Parallel / resource
+max_workers: 4          # concurrent solver jobs (limited by licenses)
+cpus_per_job: 4
+gen_inp_workers: 1      # CAE write-inp concurrency (keep low)
+timeout_gen_s: 1800
+timeout_solve_s: 1800
+timeout_extract_s: 600
+
+# Modes kept after discarding rigid-body / near-zero frequencies
+n_modes_keep: 7

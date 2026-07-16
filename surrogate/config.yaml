@@ -1,0 +1,27 @@
+# Surrogate GP training (reads dataset produced by ../driver.py)
+
+data:
+  # Preferred: aggregated FE results
+  npz: ../dataset/train.npz
+  # Fallback: flat CSV from build_dataset.py
+  csv: ../dataset/train.csv
+
+theta_columns: [a_mm, b_mm, E1_1e11Pa, E2_1e11Pa]
+n_modes: 7
+
+# Train / test split (by run, not random within modes)
+test_fraction: 0.2
+seed: 42
+
+# Independent multi-output GP: one GPR per frequency (MultiOutputRegressor)
+gp:
+  kernel: "RBF+White"          # Constant * RBF + WhiteKernel
+  normalize_y: true
+  n_restarts_optimizer: 5
+  alpha: 1.0e-8
+
+# Where artifacts are written (this folder)
+out_dir: .
+model_file: multioutput_gp.joblib
+metrics_file: metrics.json
+scaler_file: input_scaler.joblib

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.odb
+dataset/
+samples/
+test_run/
+*.odb
+model_updating/fe_bias/
+__pycache__/
+.vscode/
+*.odb
