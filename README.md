@@ -203,31 +203,162 @@ end-to-end on a synthetic θ→y map before deployment.
 
 ```
 D:\python_run_package\
-├── driver.py                    # FE campaign outer loop (Sobol', subprocess)
-├── abaqus_run_single.py         # per-sample Abaqus batch script
-├── runs\                        # run_XXXX folders + dataset.csv
-├── surrogate\                   # GP bundle, scaler, predict_gp.py
+├── config_dataset.yaml          # FE campaign config (workers, cpus, memory, timeouts)
+├── driver.py                    # FE campaign (subcommands: sample|generate-inp|
+│                                #   solve-parallel|extract|build|all)
+├── abaqus_run_single.py         # per-sample Abaqus/CAE batch script (write_inp)
+├── extract_odb.py               # per-run ODB -> result_XXXX.json (Abaqus python)
+├── build_dataset.py             # aggregate result JSONs -> dataset\train.npz
+├── rebuild_from_new_fem.py      # one-shot orchestrator (clean|fe|train-gp|
+│                                #   gen-dataset|train-gen)
+├── mac_extract.py               # full-field auto/cross MAC (Abaqus python)
+├── mode_symmetry.py             # sym/antisym wing-mode classifier (Abaqus python)
+├── samples\
+│   ├── lhs_200_seed42.csv       # LHS design
+│   ├── runs\run_XXXX\           # per-run scratch (inp, odb, result_XXXX.json)
+│   └── solve_progress.log       # live solve status
+├── dataset\train.npz            # FE training set (theta, 7 freqs)
+├── surrogate\                   # multioutput_gp.joblib, input_scaler.joblib,
+│                                #   train_gp.py, predict_gp.py, metrics/plots
 └── model_updating\
-    ├── config.py                # dims, prior box, all hyperparameters
+    ├── config.py                # dims, prior box, hyperparameters, A_OFFSET(=24)
     ├── generate_dataset.py      # GP -> (theta, y) dataset (Sobol')
     ├── data.py                  # standardisation, loaders
     ├── models\{common,cvae,cgan,cnf,cddpm,cfm}.py
     ├── train.py                 # unified trainer (--method all)
-    └── sample.py                # posterior sampling & summaries
+    ├── sample.py                # single-obs posterior sampling (a shifted +24)
+    ├── infer_obs.py             # batch posterior over all obs -> results\ + plots
+    ├── validate_surrogate_f7.py # held-out validation: surrogate f7 vs obs f6
+    ├── validation_hist_pdf.py           # histogram + fitted KDE (f7 vs f6)
+    ├── validation_hist_all_modes.py     # all-mode distributional grid
+    ├── data\obs_natural_frequencies_10.csv  # observed f1..f10 (only f1..f5 used)
+    ├── data\obs_input.csv       # logged truth (a, b) for the 30 structures
+    └── results\                 # samples_*.csv, pairplots, recovery, validation, MAC
 ```
 
-## Appendix B. Command crib sheet
+## Appendix B. Command runbook (end-to-end)
 
+> **Run everything from PowerShell** in `D:\python_run_package` (Abaqus must be
+> on PATH). Keep the whole path **off OneDrive**. All stages **resume** — they
+> skip completed runs — so any command below is safe to re-run after a stop.
+> If a Python command hangs with **no output at all**, the Windows **WMI
+> service is stuck** — reboot (see Force-stop).
+
+### Key config (`config_dataset.yaml`)
+
+```yaml
+n_samples: 200        seed: 42        n_modes_keep: 7
+gen_inp_workers: 1    # MUST stay 1 (parallel CAE clobbers sibling jobs)
+max_workers: 2        # concurrent solves   (2 x 4 cpus = 8 threads)
+cpus_per_job: 4
+memory_per_job: "4 gb" -> set "24 gb"   # ~1M-DOF model needs in-core RAM
+timeout_solve_s: 5400 # 90 min (a single solve is ~30 min)
 ```
-:: FE campaign
-python driver.py --n 256
-python driver.py --n 256 --resume
 
-:: single verification run (inside a folder containing master_model.cae)
-abaqus cae noGUI=abaqus_run_single.py -- 0 296.75 26.0087 60000 60000
+### Stage 1 — FE campaign (Abaqus; the long stage, ~hours)
 
-:: generative pipeline
-python generate_dataset.py --n 20000 --gp-dir ..\surrogate --sobol
-python train.py --method all --data data\dataset.npz
-python sample.py --method all --y 28.1 55.3 89.7 120.4 150.2 --n 5000
+```powershell
+python -u driver.py sample          # LHS design           -> samples\lhs_200_seed42.csv
+python -u driver.py generate-inp    # CAE noGUI -mesa       -> run_XXXX.inp   (serial)
+python -u driver.py solve-parallel  # abaqus solve (interactive, 24 GB/job)
+python -u driver.py extract         # ODB -> result_XXXX.json (7 freqs)
+python -u driver.py build           # aggregate            -> dataset\train.npz
+python -u driver.py all             # ...or all five stages in sequence
+```
+
+### Stage 2 — GP surrogate
+
+```powershell
+python -u surrogate\train_gp.py                              # -> surrogate\*.joblib
+python surrogate\predict_gp.py --a 277 --b 25 --E1 0.6 --E2 0.7   # spot check (sketch-frame a)
+```
+
+### Stage 3 — generative training set (GP -> data)
+
+```powershell
+cd model_updating
+python -u generate_dataset.py --n 20000 --gp-dir ..\surrogate --seed 42 --sobol --out data\dataset.npz
+```
+
+### Stage 4 — train the five methods
+
+```powershell
+python -u train.py --method all --data data\dataset.npz     # -> checkpoints\*.pt
+```
+
+### Stage 5 — posterior generation (`a` auto-shifted +24 to physical frame)
+
+```powershell
+python -u infer_obs.py --method all --n 5000                # 30 obs -> results\samples_*.csv + pair/recovery plots
+python -u sample.py --method all --y 19.6 39.8 88.7 103.1 141.2 --n 5000   # single observation
+```
+
+### Stage 6 — validation
+
+```powershell
+python -u validate_surrogate_f7.py        # held-out: surrogate f7 vs observed f6 (recovery)
+python -u validation_hist_pdf.py          # histogram + fitted KDE (f7 vs f6)
+python -u validation_hist_all_modes.py    # all-mode distributional grid
+```
+
+### Stage 7 — MAC / mode analysis (Abaqus python; reads existing ODBs)
+
+```powershell
+cd D:\python_run_package
+abaqus python mac_extract.py -- 100       # full-field auto-MAC -> results\mac_run0100.npz
+abaqus python mode_symmetry.py -- 100     # symmetric / antisymmetric wing-mode table
+```
+
+### One-shot orchestrator (`rebuild_from_new_fem.py`)
+
+```powershell
+python -u rebuild_from_new_fem.py --n 200 --seed 42 --max-workers 2 --n-gen 20000   # FULL (DELETES samples\runs first!)
+python -u rebuild_from_new_fem.py --from-stage train-gp --n-gen 20000 --seed 42     # resume from GP (keeps FE data)
+python -u rebuild_from_new_fem.py --from-stage fe                                    # resume FE, skip the destructive clean
+```
+
+---
+
+## Appendix C. Force-stop, recovery & status
+
+### Stop a running job
+
+```powershell
+# 1. Graceful: press Ctrl+C in the driver's terminal.
+
+# 2. Hard stop (Ctrl+C did not reach the Abaqus children) -- run as ADMINISTRATOR:
+Get-Process standard, pre, explicit, ABQcaeK, ABQcaeG, SMAPython, SMALauncher, SMAEqsDirSolverSymmetric -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process python -ErrorAction SilentlyContinue | Where-Object { $_.Path -like '*Python312*' } | Stop-Process -Force
+
+# 3. Clear stale lock files before restarting:
+Get-ChildItem samples\runs -Recurse -Filter *.lck -ErrorAction SilentlyContinue | Remove-Item -Force
+```
+
+Then just re-run the stage — it resumes from where it stopped.
+
+### A solver that will not die
+
+If `taskkill /F /PID <id>` returns **"timeout period expired"** and the
+`standard.exe` keeps accumulating CPU, it is wedged in an uninterruptible
+kernel I/O wait and **cannot be killed** — **reboot**. A reboot also clears a
+hung WMI service (the cause of a driver that starts but prints nothing).
+
+### Recover individual failed runs
+
+```powershell
+# Corrupt CAE copy  (result: "openMdb ... invalid model database", no .inp):
+Remove-Item samples\runs\run_0034\master_model.cae, samples\runs\run_0034\run_0034.* -Force
+python -u driver.py generate-inp; python -u driver.py solve-parallel; python -u driver.py extract
+
+# Partial / killed solve  (ODB exists but "no non-zero eigenmodes" at extract):
+Remove-Item samples\runs\run_0027\run_0027.odb, samples\runs\run_0027\run_0027.lck -Force
+python -u driver.py solve-parallel; python -u driver.py extract
+```
+
+### Check progress
+
+```powershell
+Get-Content samples\solve_progress.log -Tail 20          # live solve log
+(Get-ChildItem samples\runs\*\*.odb).Count               # completed solves
+Get-Process standard -ErrorAction SilentlyContinue       # is a solver running now?
 ```

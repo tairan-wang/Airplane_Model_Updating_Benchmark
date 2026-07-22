@@ -1,9 +1,6 @@
 ﻿runs/
 data/
-checkpoints/
-posterior/
-results/
-plots/
+dataset/
 __pycache__/
 *.pyc
 *.odb
