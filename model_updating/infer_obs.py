@@ -124,22 +124,41 @@ def pooled_pair_plot(samples: np.ndarray, truth: np.ndarray | None,
     plt.close(fig)
 
 
-def recovery_plot(means, lo, hi, truth, method: str, out: Path):
+def recovery_plot(pooled, truth, method: str, out: Path):
+    """Distributional recovery: histogram + fitted KDE of the pooled posterior
+    (recovered parameter variability) overlaid on the true-value distribution,
+    for each identifiable parameter. Good recovery = the two densities match."""
+    from scipy.stats import gaussian_kde
+    rng = np.random.default_rng(0)
+    rec_color, true_color = "#4878a8", "#c44e52"
     n_true = truth.shape[1]
-    fig, axes = plt.subplots(1, n_true, figsize=(4.5 * n_true, 4))
+    fig, axes = plt.subplots(1, n_true, figsize=(4.8 * n_true, 4.2))
     if n_true == 1:
         axes = [axes]
     for j in range(n_true):
         ax = axes[j]
-        t, m = truth[:, j], means[:, j]
-        ax.errorbar(t, m, yerr=[m - lo[:, j], hi[:, j] - m], fmt="o",
-                    ms=4, lw=0.8, capsize=2, color="#4878a8",
-                    ecolor="#9db8d2")
-        lim = [min(t.min(), m.min()), max(t.max(), m.max())]
-        ax.plot(lim, lim, "k--", lw=1)
-        ax.set_xlabel(f"true {C.PARAM_NAMES[j]}")
-        ax.set_ylabel(f"posterior mean {C.PARAM_NAMES[j]}")
-        ax.set_title(f"{method}: {C.PARAM_NAMES[j]} recovery")
+        rec = pooled[:, j]
+        tru = truth[:, j]
+        lo = min(rec.min(), tru.min())
+        hi = max(rec.max(), tru.max())
+        xs = np.linspace(lo, hi, 300)
+        sub = rec if len(rec) <= 20000 else \
+            rec[rng.choice(len(rec), 20000, replace=False)]
+
+        ax.hist(rec, bins=50, density=True, color=rec_color, alpha=0.30)
+        ax.plot(xs, gaussian_kde(sub)(xs), color=rec_color, lw=1.8,
+                label="recovered (posterior)")
+        ax.hist(tru, bins=12, density=True, color=true_color, alpha=0.30)
+        ax.plot(xs, gaussian_kde(tru)(xs), color=true_color, lw=1.8,
+                label="true")
+        ax.axvline(rec.mean(), color=rec_color, ls="--", lw=1)
+        ax.axvline(tru.mean(), color=true_color, ls="--", lw=1)
+        ax.set_xlabel(C.PARAM_NAMES[j])
+        ax.set_ylabel("probability density")
+        ax.set_title(f"{method}: {C.PARAM_NAMES[j]} recovery\n"
+                     f"post mean={rec.mean():.1f}  true mean={tru.mean():.1f}")
+        if j == 0:
+            ax.legend(fontsize=8)
     fig.tight_layout()
     fig.savefig(out, dpi=150)
     plt.close(fig)
@@ -208,12 +227,13 @@ def main():
 
         # ---- recovery + coverage (needs truth) ------------------------
         if truth is not None:
+            n_t = truth.shape[1]
+            # distributional recovery: pooled posterior vs true values
+            recovery_plot(pooled[:, :n_t], truth, m,
+                          args.out / f"recovery_{m}.png")
             means = th_phys.mean(axis=0)
             lo = np.percentile(th_phys, 5, axis=0)
             hi = np.percentile(th_phys, 95, axis=0)
-            n_t = truth.shape[1]
-            recovery_plot(means[:, :n_t], lo[:, :n_t], hi[:, :n_t],
-                          truth, m, args.out / f"recovery_{m}.png")
             cov = [np.mean([(lo[k, j] <= truth[k, j] <= hi[k, j])
                             for k in range(N_obs)]) for j in range(n_t)]
             print(f"[{m}] 90% CI empirical coverage: "
