@@ -185,6 +185,8 @@ def main():
         N_obs = th.shape[1]
         th_phys = s_theta.inverse(
             th.reshape(-1, C.THETA_DIM)).reshape(th.shape)
+        # shift 'a' into the physical/logged-truth frame (wing-root datum)
+        th_phys = C.to_physical_frame(th_phys)
 
         # ---- combined CSV: obs_id + parameter columns -----------------
         pooled = th_phys.transpose(1, 0, 2).reshape(-1, C.THETA_DIM)

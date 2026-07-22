@@ -1,0 +1,39 @@
+{
+  "train_npz": "dataset\\train.npz",
+  "train_csv": "dataset\\train.csv",
+  "n_ok": 200,
+  "failed_runs": [],
+  "meta": {
+    "n_ok": 200,
+    "n_failed_or_incomplete": 0,
+    "failed_runs": [],
+    "theta_columns": [
+      "a_mm",
+      "b_mm",
+      "E1_1e11Pa",
+      "E2_1e11Pa"
+    ],
+    "n_modes": 7,
+    "n_sensors": 5,
+    "bounds": {
+      "a": [
+        266.0,
+        286.0
+      ],
+      "b": [
+        20.0,
+        30.0
+      ],
+      "E1": [
+        0.5,
+        0.9
+      ],
+      "E2": [
+        0.5,
+        0.9
+      ]
+    },
+    "seed": 42,
+    "n_samples_requested": 200
+  }
+}

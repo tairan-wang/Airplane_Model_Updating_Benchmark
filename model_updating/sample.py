@@ -54,6 +54,8 @@ def main():
         with torch.no_grad():
             th = model.sample(y, args.n)          # [n, 1, D]
         th = s_theta.inverse(th[:, 0, :].cpu().numpy())
+        # shift 'a' into the physical/logged-truth frame (wing-root datum)
+        th = C.to_physical_frame(th)
         np.save(args.out / f"samples_{m}.npy", th)
 
         print(f"\n[{m}] posterior from {args.n} samples "

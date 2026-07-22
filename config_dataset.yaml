@@ -2,8 +2,8 @@
 # Units: a,b in mm; E1,E2 sampled as multiples of 1e11 Pa (convert to MPa for Abaqus)
 
 abaqus_cmd: abaqus
-# Prefer a local non-synced copy if you have one; fallback used for this machine:
-master_cae: D:\python_run_package\test_run\master_model.cae
+# User-updated FEM (source of truth)
+master_cae: D:\python_run_package\abaqus_model\fem_model.cae
 local_cae_name: master_model.cae
 
 # Output layout
@@ -17,17 +17,21 @@ script_extract: extract_odb.py
 n_samples: 200
 seed: 42
 bounds:
-  a:  [290.0, 310.0]   # mm
+  a:  [266.0, 286.0]   # mm (updated FEM)
   b:  [20.0,  30.0]    # mm
   E1: [0.5,   0.9]     # x 1e11 Pa
   E2: [0.5,   0.9]     # x 1e11 Pa
 
 # Parallel / resource
-max_workers: 4          # concurrent solver jobs (limited by licenses)
+max_workers: 2          # 2 concurrent solves x 4 cpus = 8 threads (= physical
+                        # cores). 16 threads oversubscribed all cores and made
+                        # each solve crawl past the timeout.
 cpus_per_job: 4
-gen_inp_workers: 1      # CAE write-inp concurrency (keep low)
+memory_per_job: "24 gb" # per-solve cap. Model is ~1M DOF and needs >4 GB;
+                        # 2 concurrent x 24 = 48 GB, leaves headroom on 64 GB.
+gen_inp_workers: 1      # MUST stay 1: parallel CAE + cleanup kills sibling jobs
 timeout_gen_s: 1800
-timeout_solve_s: 1800
+timeout_solve_s: 5400   # 90 min; single solve is ~30 min, give slow ones margin
 timeout_extract_s: 600
 
 # Modes kept after discarding rigid-body / near-zero frequencies

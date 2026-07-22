@@ -25,15 +25,35 @@ import shutil
 import subprocess
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import yaml
-from scipy.stats import qmc
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _latin_hypercube(n: int, d: int, seed: int) -> np.ndarray:
+    """Unit-hypercube LHS in [0, 1]^d (numpy only; avoids scipy/WMI hang)."""
+    rng = np.random.default_rng(seed)
+    u = np.zeros((n, d), dtype=float)
+    for j in range(d):
+        perm = rng.permutation(n)
+        u[:, j] = (perm + rng.random(n)) / n
+    return u
+
+
+def _append_progress(msg: str) -> None:
+    print(msg, flush=True)
+    try:
+        log = ROOT / "samples" / "solve_progress.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with open(log, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except OSError:
+        pass
 
 
 # ----------------------------------------------------------------------
@@ -91,6 +111,93 @@ def write_manifest(cfg: dict, name: str, payload: dict) -> None:
     print(f"Manifest -> {path}")
 
 
+def _kill_process_tree(proc: subprocess.Popen) -> None:
+    """Force-kill process tree (avoids Windows batch Y/N hang on terminate)."""
+    if proc.poll() is not None:
+        return
+    if sys.platform == "win32":
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+    else:
+        proc.kill()
+    try:
+        proc.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def _generate_inp_done(rd: Path, rid: int) -> bool:
+    """True once CAE finished write_inp (JSON status + large INP on disk)."""
+    stub = rd / f"result_{rid:04d}.json"
+    inp = rd / f"run_{rid:04d}.inp"
+    if not stub.exists() or not inp.exists():
+        return False
+    try:
+        data = json.loads(stub.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return False
+    if data.get("status") != "inp_ready":
+        return False
+    return inp.stat().st_size >= 1_000_000
+
+
+def _run_cmd_wait(
+    cmd: list[str],
+    cwd: Path,
+    timeout_s: int,
+    log_path: Path | None = None,
+    success_check: Callable[[], bool] | None = None,
+) -> int:
+    """Run command; stop early only when success_check says the job is done.
+
+    Never taskkill by process *name* — that kills sibling CAE jobs when
+    gen_inp_workers > 1 and left the pipeline in a broken state after ~run 30.
+    """
+    use_shell = sys.platform == "win32"
+    cmdline = subprocess.list2cmdline(cmd) if use_shell else cmd
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if log_path.exists():
+            log_path.unlink()
+        logf = open(log_path, "w", encoding="utf-8", errors="replace")
+    else:
+        logf = subprocess.DEVNULL
+    try:
+        proc = subprocess.Popen(
+            cmdline,
+            cwd=str(cwd),
+            shell=use_shell,
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+        )
+        t0 = time.time()
+        while True:
+            rc = proc.poll()
+            if rc is not None:
+                return int(rc)
+            if success_check is not None and success_check():
+                for _ in range(5):
+                    if proc.poll() is not None:
+                        return 0
+                    time.sleep(1)
+                _kill_process_tree(proc)
+                return 0
+            if time.time() - t0 > timeout_s:
+                _kill_process_tree(proc)
+                if log_path is not None:
+                    with open(log_path, "a", encoding="utf-8") as lf:
+                        lf.write("\nTIMEOUT\n")
+                return -9
+            time.sleep(2)
+    finally:
+        if logf not in (subprocess.DEVNULL, None):
+            logf.close()
+
+
 def run_cmd(
     cmd: list[str],
     cwd: Path,
@@ -104,6 +211,38 @@ def run_cmd(
     else:
         cmdline = cmd
     try:
+        if log_path is not None:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_targets = [log_path, log_path.with_name("solve_run.log")]
+            last_err: OSError | None = None
+            for target in log_targets:
+                try:
+                    if target.exists():
+                        target.unlink()
+                    with open(target, "w", encoding="utf-8",
+                              errors="replace") as logf:
+                        proc = subprocess.run(
+                            cmdline,
+                            cwd=str(cwd),
+                            timeout=timeout_s,
+                            shell=use_shell,
+                            stdout=logf,
+                            stderr=subprocess.STDOUT,
+                            check=False,
+                        )
+                    if target != log_path and target.exists():
+                        try:
+                            if log_path.exists():
+                                log_path.unlink()
+                            target.replace(log_path)
+                        except OSError:
+                            pass
+                    return int(proc.returncode)
+                except OSError as exc:
+                    last_err = exc
+            if last_err is not None:
+                raise last_err
+
         proc = subprocess.run(
             cmdline,
             cwd=str(cwd),
@@ -114,9 +253,6 @@ def run_cmd(
             text=True,
             check=False,
         )
-        if log_path is not None:
-            log_path.write_text(proc.stdout or "", encoding="utf-8",
-                                errors="replace")
         return int(proc.returncode)
     except subprocess.TimeoutExpired as exc:
         if log_path is not None:
@@ -140,9 +276,8 @@ def cmd_sample(cfg: dict) -> Path:
     hi = np.array([bounds["a"][1], bounds["b"][1],
                    bounds["E1"][1], bounds["E2"][1]], dtype=float)
 
-    sampler = qmc.LatinHypercube(d=4, seed=seed)
-    u = sampler.random(n=n)
-    theta = qmc.scale(u, lo, hi)
+    u = _latin_hypercube(n, 4, seed)
+    theta = lo + u * (hi - lo)
 
     out = samples_csv_path(cfg)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -235,8 +370,33 @@ def generate_one(cfg: dict, sample: dict) -> dict:
         f"{sample['E2_MPa']:.3f}",
         "write_inp",
     ]
-    rc = run_cmd(cmd, rd, int(cfg.get("timeout_gen_s", 1800)),
-                 rd / "generate_inp.log")
+    print(f"  [gen start] run_{rid:04d}  "
+          f"a={sample['a']:.2f} b={sample['b']:.2f}  "
+          f"(CAE noGUI, ~3-5 min, no window expected)",
+          flush=True)
+    # Retry only when .inp was not produced (transient CAE failures).
+    attempts = max(1, int(cfg.get("gen_inp_retries", 3)))
+    rc = -1
+    for attempt in range(attempts):
+        # Drop stale failed JSON so a prior crash does not look like success.
+        if stub.exists() and not inp_path.exists():
+            try:
+                stub.unlink()
+            except OSError:
+                pass
+        rc = _run_cmd_wait(
+            cmd, rd, int(cfg.get("timeout_gen_s", 1800)),
+            rd / "generate_inp.log",
+            success_check=lambda: _generate_inp_done(rd, rid),
+        )
+        if _generate_inp_done(rd, rid):
+            print(f"  [gen inp ready] run_{rid:04d}", flush=True)
+            break
+        if attempt < attempts - 1:
+            print(f"  [gen retry] run_{rid:04d} attempt "
+                  f"{attempt + 1}/{attempts} produced no .inp; retrying",
+                  flush=True)
+            time.sleep(5)
 
     # Enrich stub JSON with Table-6 units if CAE wrote a result
     if stub.exists():
@@ -277,6 +437,8 @@ def cmd_generate_inp(cfg: dict) -> None:
     Path(cfg["runs_dir"]).mkdir(parents=True, exist_ok=True)
 
     workers = int(cfg.get("gen_inp_workers", 1))
+    print(f"generate-inp: {len(samples)} jobs, gen_inp_workers={workers}",
+          flush=True)
     results = []
     t0 = time.time()
     if workers <= 1:
@@ -286,7 +448,7 @@ def cmd_generate_inp(cfg: dict) -> None:
             print(f"[gen {i + 1}/{len(samples)}] run_{r['run_id']:04d} "
                   f"status={r['status']}", flush=True)
     else:
-        with ProcessPoolExecutor(max_workers=workers) as ex:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
             futs = {ex.submit(generate_one, cfg, s): s for s in samples}
             done = 0
             for fut in as_completed(futs):
@@ -307,6 +469,34 @@ def cmd_generate_inp(cfg: dict) -> None:
 # ----------------------------------------------------------------------
 # Stage: solve-parallel
 # ----------------------------------------------------------------------
+def _job_completed_ok(rd: Path, job: str) -> bool:
+    sta = rd / f"{job}.sta"
+    if not sta.exists():
+        return False
+    txt = sta.read_text(encoding="utf-8", errors="replace").upper()
+    return ("COMPLETED" in txt
+            and "ABORTED" not in txt.split("COMPLETED")[-1][:200])
+
+
+def _prepare_job_for_solve(rd: Path, job: str) -> None:
+    """Remove stale locks / incomplete outputs before re-solving."""
+    for lck in rd.glob("*.lck"):
+        try:
+            lck.unlink()
+        except OSError:
+            pass
+    if _job_completed_ok(rd, job):
+        return
+    for pattern in (f"{job}.odb", f"{job}.sta", f"{job}.sim", f"{job}.dat",
+                    f"{job}.msg", f"{job}.prt", f"{job}.com", f"{job}.env",
+                    f"{job}.*.exception", "solve.log", "solve_run.log"):
+        for path in rd.glob(pattern):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
 def solve_one(cfg: dict, sample: dict) -> dict:
     rid = int(sample["run_id"])
     rd = run_dir(cfg, rid)
@@ -317,16 +507,9 @@ def solve_one(cfg: dict, sample: dict) -> dict:
     if not inp.exists():
         return {"run_id": rid, "status": "no_inp"}
 
-    # Resume if ODB exists and looks non-empty
-    if odb.exists() and odb.stat().st_size > 0:
-        sta = rd / f"{job}.sta"
-        # Prefer checking .sta for COMPLETED if present
-        if sta.exists():
-            txt = sta.read_text(encoding="utf-8", errors="replace").upper()
-            if "COMPLETED" in txt and "ABORTED" not in txt.split("COMPLETED")[-1][:200]:
-                return {"run_id": rid, "status": "solved", "skipped": True}
-        else:
-            return {"run_id": rid, "status": "solved", "skipped": True}
+    # Resume only when ODB + .sta show a successful completion
+    if odb.exists() and odb.stat().st_size > 0 and _job_completed_ok(rd, job):
+        return {"run_id": rid, "status": "solved", "skipped": True}
 
     cpus = int(cfg.get("cpus_per_job", 4))
     cmd = [
@@ -334,10 +517,37 @@ def solve_one(cfg: dict, sample: dict) -> dict:
         f"job={job}",
         f"input={job}.inp",
         f"cpus={cpus}",
-        "interactive",
     ]
-    rc = run_cmd(cmd, rd, int(cfg.get("timeout_solve_s", 1800)),
-                 rd / "solve.log")
+    mem = str(cfg.get("memory_per_job", "")).strip()
+    if mem:
+        # Cap per-job solver memory so N parallel solves don't each grab
+        # ~90% of physical RAM (Abaqus default). list2cmdline quotes the
+        # space in e.g. "4 gb" correctly on Windows.
+        cmd.append(f"memory={mem}")
+    cmd.append("ask=off")
+    # CRITICAL: without `interactive`, Abaqus submits the job to the background
+    # and returns rc=0 immediately -> solve_one checks for the .odb before the
+    # solver has created it and wrongly reports "failed", while 200 detached
+    # solvers storm the machine. `interactive` makes abaqus wait for completion.
+    cmd.append("interactive")
+    try:
+        _prepare_job_for_solve(rd, job)
+        slog = rd / "solve.log"
+        rc = -1
+        for attempt in range(3):
+            rc = run_cmd(cmd, rd, int(cfg.get("timeout_solve_s", 1800)), slog)
+            if slog.exists():
+                txt = slog.read_text(encoding="utf-8", errors="replace")
+                lic_fail = ("cpus available (0)" in txt
+                            or "License for standard" in txt)
+                if lic_fail and attempt < 2:
+                    time.sleep(30)
+                    _prepare_job_for_solve(rd, job)
+                    continue
+            break
+    except OSError as exc:
+        return {"run_id": rid, "status": "failed", "error": str(exc),
+                "skipped": False}
 
     if odb.exists() and odb.stat().st_size > 0:
         return {"run_id": rid, "status": "solved", "rc": rc, "skipped": False}
@@ -347,19 +557,29 @@ def solve_one(cfg: dict, sample: dict) -> dict:
 def cmd_solve_parallel(cfg: dict, max_workers: int | None = None) -> None:
     samples = read_samples(resolve_samples_csv(cfg))
     workers = max_workers or int(cfg.get("max_workers", 4))
-    print(f"solve-parallel: {len(samples)} jobs, max_workers={workers}")
+    print(f"solve-parallel: {len(samples)} jobs, max_workers={workers}",
+          flush=True)
+    _append_progress(f"solve-parallel: {len(samples)} jobs, max_workers={workers}")
 
     results = []
     t0 = time.time()
-    with ProcessPoolExecutor(max_workers=workers) as ex:
-        futs = {ex.submit(solve_one, cfg, s): s for s in samples}
-        done = 0
-        for fut in as_completed(futs):
-            r = fut.result()
+    if workers <= 1:
+        for done, s in enumerate(samples, 1):
+            r = solve_one(cfg, s)
             results.append(r)
-            done += 1
-            print(f"[solve {done}/{len(samples)}] run_{r['run_id']:04d} "
-                  f"status={r['status']}", flush=True)
+            line = (f"[solve {done}/{len(samples)}] run_{r['run_id']:04d} "
+                    f"status={r['status']}")
+            _append_progress(line)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futs = {ex.submit(solve_one, cfg, s): s for s in samples}
+            done = 0
+            for fut in as_completed(futs):
+                r = fut.result()
+                results.append(r)
+                done += 1
+                print(f"[solve {done}/{len(samples)}] run_{r['run_id']:04d} "
+                      f"status={r['status']}", flush=True)
 
     ok = sum(1 for r in results if r["status"] == "solved")
     write_manifest(cfg, "solve", {
@@ -453,7 +673,7 @@ def cmd_extract(cfg: dict, max_workers: int | None = None) -> None:
     workers = max_workers or int(cfg.get("max_workers", 4))
     results = []
     t0 = time.time()
-    with ProcessPoolExecutor(max_workers=workers) as ex:
+    with ThreadPoolExecutor(max_workers=workers) as ex:
         futs = {ex.submit(extract_one, cfg, s): s for s in samples}
         done = 0
         for fut in as_completed(futs):
@@ -556,6 +776,7 @@ def main() -> None:
         cfg["max_workers"] = args.max_workers
 
     cmd = args.command
+    print(f"driver.py: stage={cmd}", flush=True)
     if cmd == "sample":
         cmd_sample(cfg)
     elif cmd == "generate-inp":
@@ -569,10 +790,15 @@ def main() -> None:
     elif cmd == "legacy-full":
         cmd_legacy_full(cfg)
     elif cmd == "all":
+        print("=== sample ===", flush=True)
         cmd_sample(cfg)
+        print("=== generate-inp ===", flush=True)
         cmd_generate_inp(cfg)
+        print("=== solve-parallel ===", flush=True)
         cmd_solve_parallel(cfg, args.max_workers)
+        print("=== extract ===", flush=True)
         cmd_extract(cfg, args.max_workers)
+        print("=== build ===", flush=True)
         cmd_build(cfg)
     else:
         ap.error(f"unknown command {cmd}")

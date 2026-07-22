@@ -9,8 +9,8 @@ Usage (normally via driver.py, not by hand):
     abaqus cae noGUI=abaqus_run_single.py -- <run_id> <a> <b> <E1> <E2> [mode]
 
         run_id : integer tag for this sample
-        a      : wing sketch driving dimension d[0] [mm]  (GUI: tip/span ~266-286)
-        b      : wing sketch driving dimension d[1] [mm]  (GUI: tip chord ~20-30)
+        a      : wingtip x-position in the wing sketch [mm]   (baseline ~296.75)
+        b      : wingtip chord [mm]                            (baseline ~26.0)
         E1     : Young's modulus of material 'Al4lianjiequyu1' [MPa]
         E2     : Young's modulus of material 'Al4lianjiequyu2' [MPa]
         mode   : optional; "write_inp" = edit/mesh/write .inp and exit
@@ -18,10 +18,11 @@ Usage (normally via driver.py, not by hand):
 
 Design principles
 -----------------
-* Geometry is varied like the GUI macro: edit sketch dimensions d[0], d[1],
-  regenerate, then generateMesh with existing seeds (no re-seed).
 * The master .cae is NEVER saved -> every run starts from the identical
   pristine state, so sketch behaviour is deterministic.
+* Wing-outline lines are found by COORDINATES (any line lying outboard of
+  the wing root plane), not by hard-coded repository indices, so the script
+  survives changes in sketch history.
 * Natural frequencies and mode-shape samples at fixed SENSOR COORDINATES
   are written to a per-run JSON file. Nearest-node lookup makes the sensor
   data invariant to re-meshing/node renumbering (needed for MAC).
@@ -113,45 +114,55 @@ def dump_result():
 
 
 # ----------------------------------------------------------------------
-# 3. GEOMETRY EDIT -- sketch dimensions (matches GUI macro abaqusMacros.py)
+# 3. GEOMETRY EDIT -- coordinate-based wing outline replacement
 # ----------------------------------------------------------------------
-# In fem_model.cae the wing sketch carries two driving dimensions:
-#   d[0] = tip x / half-span parameter  (a)   [mm]
-#   d[1] = tip chord parameter          (b)   [mm]
-# GUI workflow: setValues on these dims -> feature.setValues -> regenerate
-# -> generateMesh (seeds retained; mesh is auto-cleared on regenerate).
 def edit_wing_sketch(model):
     part = model.parts[PART_NAME]
 
-    # Unlock in-memory if needed; master .cae is never saved.
+    # The part may carry a lock flag (Model Tree > Lock) which blocks all
+    # geometric edits. Unlock it in-memory; the master file is never saved,
+    # so its on-disk state is untouched.
     try:
         part.Unlock(reportWarnings=False)
     except TypeError:
         part.Unlock()
     except Exception:
-        pass
+        pass  # not locked / no Unlock needed
 
     feat = part.features[FEATURE_NAME]
+
     sk = model.ConstrainedSketch(name="__edit__", objectToCopy=feat.sketch)
-    part.projectReferencesOntoSketch(
-        filter=COPLANAR_EDGES, sketch=sk, upToFeature=feat)
+    part.projectReferencesOntoSketch(filter=COPLANAR_EDGES, sketch=sk,
+                                     upToFeature=feat)
 
-    dims = sk.dimensions
-    if len(dims.keys()) < 2:
-        raise RuntimeError(
-            "Wing sketch needs >=2 driving dimensions (d[0]=a, d[1]=b); "
-            "found {0}. Re-record GUI macro if the sketch changed.".format(
-                len(dims.keys())))
+    # --- identify wing-outline lines: any LINE with a point strictly
+    #     outboard of the root plane on either side ---------------------
+    to_delete = []
+    for gid in sk.geometry.keys():
+        g = sk.geometry[gid]
+        try:
+            if g.curveType != LINE:
+                continue
+            px = g.pointOn[0]
+        except Exception:
+            continue
+        if abs(px) > ROOT_X + MIRROR_TOL:
+            to_delete.append(g)
 
-    # Dimension repository keys are typically 0,1,... (same as GUI d[0], d[1])
-    try:
-        dims[0].setValues(value=float(a_par))
-        dims[1].setValues(value=float(b_par))
-    except Exception:
-        # Fall back to first two dimensions in iteration order
-        keys = list(dims.keys())
-        dims[keys[0]].setValues(value=float(a_par))
-        dims[keys[1]].setValues(value=float(b_par))
+    # delete associated constraints implicitly by deleting geometry
+    if to_delete:
+        sk.delete(objectList=tuple(to_delete))
+
+    # --- redraw starboard wing from parameters ------------------------
+    y_tip_inner = EDGE_Y_TOP - b_par
+    l_edge = sk.Line(point1=(ROOT_X, EDGE_Y_TOP), point2=(a_par, EDGE_Y_TOP))
+    l_tip  = sk.Line(point1=(a_par, EDGE_Y_TOP),  point2=(a_par, y_tip_inner))
+    sk.VerticalConstraint(addUndoState=False, entity=l_tip)
+    l_swp  = sk.Line(point1=(a_par, y_tip_inner), point2=(ROOT_X, EDGE_Y_BOT))
+
+    # --- port wing by mirroring about the vertical centreline ---------
+    mirror = sk.ConstructionLine(point1=(0.0, 0.0), point2=(0.0, 100.0))
+    sk.copyMirror(mirrorLine=mirror, objectList=(l_edge, l_tip, l_swp))
 
     feat.setValues(sketch=sk)
     del model.sketches["__edit__"]
@@ -349,15 +360,16 @@ try:
     # after discarding rigid-body / near-zero frequencies
     model.steps[STEP_NAME].setValues(numEigen=N_EIGEN_SOLVE)
 
-    # GUI workflow (abaqusMacros.py): regenerate clears mesh; remesh with
-    # existing seeds (do NOT re-seed). generateMesh recreates element
-    # surfaces used by TIE constraints.
-    part.generateMesh()
+    # Keep the existing mesh (GUI workflow: regenerate geometry, do NOT remesh).
+    # Forcing generateMesh() after sketch edits produced zero/negative-volume
+    # elements on the updated FEM.
     model.rootAssembly.regenerate()
     n_el = len(part.elements)
     if n_el == 0:
         raise RuntimeError(
-            "Remesh produced zero elements (a={0}, b={1})".format(a_par, b_par))
+            "No mesh left after geometry regenerate (a={0}, b={1}). "
+            "Master CAE must already contain a mesh; remeshing is disabled."
+            .format(a_par, b_par))
     result["n_elements"] = int(n_el)
 
     job = mdb.Job(name=JOB_NAME, model=MODEL_NAME, type=ANALYSIS,
@@ -403,6 +415,3 @@ except Exception:
 finally:
     dump_result()
     # IMPORTANT: never mdb.save() -- master file must stay pristine
-    if MODE == "write_inp":
-        # Force CAE to exit; otherwise ABQcaeG window stays open on Windows.
-        os._exit(0)

@@ -17,12 +17,33 @@ Y_DIM = 5
 # Prior box for theta -- keep consistent with the GP training range.
 # Units: a [mm], b [mm], E1/E2 [x 1e11 Pa]  (matches predict_gp.py)
 PRIOR_BOUNDS = {
-    "a":  (290.0, 310.0),
+    "a":  (266.0, 286.0),
     "b":  (20.0, 30.0),
     "E1": (0.50, 0.90),
     "E2": (0.50, 0.90),
 }
 PARAM_NAMES = ["a", "b", "E1", "E2"]
+
+# Datum offset between the FE sketch parameter 'a' (d[0], measured from the
+# wing-root plane; ROOT_X = 24 mm in abaqus_run_single.py) and the physical
+# half-span logged in data/obs_input.csv. Added to posterior 'a' on OUTPUT
+# (after the inverse standardiser) so reported/plotted values match the truth
+# frame. Models still train and sample internally in the sketch frame.
+A_OFFSET = 24.0
+PARAM_OFFSETS = [A_OFFSET, 0.0, 0.0, 0.0]   # per-parameter: a, b, E1, E2
+
+
+def to_physical_frame(theta):
+    """Add PARAM_OFFSETS to inverse-transformed posterior samples.
+
+    theta: array-like [..., THETA_DIM] in physical units straight from the
+    standardiser inverse. Returns a copy with the datum offsets added on the
+    last axis (currently only 'a' is shifted by A_OFFSET).
+    """
+    import numpy as np
+    out = np.array(theta, dtype=float, copy=True)
+    out[..., :len(PARAM_OFFSETS)] += np.asarray(PARAM_OFFSETS, dtype=float)
+    return out
 
 # Gaussian noise added to GP frequencies during dataset generation, as a
 # FRACTION of each frequency (e.g. 0.002 = 0.2%). Emulates measurement

@@ -1,0 +1,27 @@
+# FE vs experimental observation comparison (30 obs rows)
+abaqus_cmd: abaqus
+master_cae: D:\python_run_package\abaqus_model\fem_model.cae
+local_cae_name: master_model.cae
+
+samples_dir: D:\python_run_package\model_updating\fe_bias
+runs_dir: D:\python_run_package\model_updating\fe_bias\runs
+dataset_dir: D:\python_run_package\model_updating\fe_bias\dataset
+script_inp: D:\python_run_package\abaqus_run_single.py
+script_extract: D:\python_run_package\extract_odb.py
+
+# n_samples here is only a fallback name for LHS file; real N = len(obs)
+n_samples: 30
+seed: 7
+bounds:
+  a:  [266.0, 286.0]
+  b:  [20.0,  30.0]
+  E1: [0.5,   0.9]
+  E2: [0.5,   0.9]
+
+max_workers: 2
+cpus_per_job: 4
+gen_inp_workers: 1
+timeout_gen_s: 1800
+timeout_solve_s: 1800
+timeout_extract_s: 600
+n_modes_keep: 7
