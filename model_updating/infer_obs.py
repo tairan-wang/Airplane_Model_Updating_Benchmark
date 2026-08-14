@@ -164,6 +164,45 @@ def recovery_plot(pooled, truth, method: str, out: Path):
     plt.close(fig)
 
 
+def per_obs_summary(method, th_phys, truth):
+    """Per-observation posterior summary rows (mean, 5/95% quantiles, and
+    truth/coverage for identifiable params) for one method."""
+    n_t = truth.shape[1] if truth is not None else 0
+    N_obs = th_phys.shape[1]
+    rows = []
+    for k in range(N_obs):
+        s = th_phys[:, k, :]                       # [n_samples, 4]
+        mean = s.mean(axis=0)
+        q05 = np.percentile(s, 5, axis=0)
+        q95 = np.percentile(s, 95, axis=0)
+        row = {"method": method, "obs": k}
+        for j, name in enumerate(C.PARAM_NAMES):
+            row[f"{name}_mean"] = f"{mean[j]:.6g}"
+            row[f"{name}_q05"] = f"{q05[j]:.6g}"
+            row[f"{name}_q95"] = f"{q95[j]:.6g}"
+            if j < n_t:
+                t = float(truth[k, j])
+                row[f"{name}_true"] = f"{t:.6g}"
+                row[f"{name}_in_CI"] = bool(q05[j] <= t <= q95[j])
+        rows.append(row)
+    return rows
+
+
+def write_summary(rows, path, n_t):
+    """Write accumulated per-obs summary rows (all methods) to a CSV."""
+    cols = ["method", "obs"]
+    for j, name in enumerate(C.PARAM_NAMES):
+        cols += [f"{name}_mean", f"{name}_q05", f"{name}_q95"]
+        if j < n_t:
+            cols += [f"{name}_true", f"{name}_in_CI"]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        for r in rows:
+            w.writerow(r)
+    print(f"summary -> {path}  ({len(rows)} rows)")
+
+
 # ----------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser()
@@ -193,6 +232,7 @@ def main():
 
     methods = list(REGISTRY) if args.method == "all" else [args.method]
     args.out.mkdir(parents=True, exist_ok=True)
+    summary_rows = []
 
     for m in methods:
         model, s_theta, s_y = load_model(m, args.ckpt, device)
@@ -239,8 +279,14 @@ def main():
             print(f"[{m}] 90% CI empirical coverage: "
                   + ", ".join(f"{C.PARAM_NAMES[j]}={cov[j]:.2f}"
                               for j in range(n_t)))
+        # ---- per-obs summary rows (accumulated across methods) ---------
+        summary_rows.extend(per_obs_summary(m, th_phys, truth))
         print(f"[{m}] -> {csv_path}, pairplot_{m}.png"
               + ("" if truth is None else f", recovery_{m}.png"))
+
+    # ---- one combined summary for all methods -------------------------
+    write_summary(summary_rows, args.out / "summary.csv",
+                  truth.shape[1] if truth is not None else 0)
 
 
 if __name__ == "__main__":

@@ -211,8 +211,10 @@ D:\python_run_package\
 ├── build_dataset.py             # aggregate result JSONs -> dataset\train.npz
 ├── rebuild_from_new_fem.py      # one-shot orchestrator (clean|fe|train-gp|
 │                                #   gen-dataset|train-gen)
+├── ensure_complete_pipeline.py  # resilient end-to-end runner (retry+resume)
 ├── mac_extract.py               # full-field auto/cross MAC (Abaqus python)
 ├── mode_symmetry.py             # sym/antisym wing-mode classifier (Abaqus python)
+├── export_fe_modes_fullfield.py # dump full-field mode shapes -> .npz (Abaqus python)
 ├── samples\
 │   ├── lhs_200_seed42.csv       # LHS design
 │   ├── runs\run_XXXX\           # per-run scratch (inp, odb, result_XXXX.json)
@@ -231,6 +233,7 @@ D:\python_run_package\
     ├── validate_surrogate_f7.py # held-out validation: surrogate f7 vs obs f6
     ├── validation_hist_pdf.py           # histogram + fitted KDE (f7 vs f6)
     ├── validation_hist_all_modes.py     # all-mode distributional grid
+    ├── regen_recovery.py                # rebuild recovery_*.png + summary.csv from samples
     ├── data\obs_natural_frequencies_10.csv  # observed f1..f10 (only f1..f5 used)
     ├── data\obs_input.csv       # logged truth (a, b) for the 30 structures
     └── results\                 # samples_*.csv, pairplots, recovery, validation, MAC
@@ -362,3 +365,42 @@ Get-Content samples\solve_progress.log -Tail 20          # live solve log
 (Get-ChildItem samples\runs\*\*.odb).Count               # completed solves
 Get-Process standard -ErrorAction SilentlyContinue       # is a solver running now?
 ```
+
+---
+
+## Appendix D. Generated files — what each output is
+
+Stage numbers refer to the Appendix B runbook. `<M>` = one of
+`cddpm, cfm, cgan, cnf, cvae`.
+
+| File | Produced by | Contents |
+|---|---|---|
+| `samples/lhs_200_seed42.csv` | `driver.py sample` | LHS design of θ = (a,b,E1,E2), sketch-frame `a` ∈ [266,286] |
+| `samples/runs/run_XXXX/run_XXXX.inp` | `driver.py generate-inp` | Abaqus input deck for one sample |
+| `samples/runs/run_XXXX/run_XXXX.odb` | `driver.py solve-parallel` | frequency-analysis results (7 modes) |
+| `samples/runs/run_XXXX/result_XXXX.json` | `driver.py extract` | per-run θ + 7 natural frequencies + status |
+| `dataset/train.npz` | `driver.py build` | FE training set: `theta`, 7 frequencies |
+| `surrogate/multioutput_gp.joblib`, `input_scaler.joblib` | `surrogate/train_gp.py` | trained multi-output GP + input scaler |
+| `surrogate/metrics.json`, `r2_scores.json`, `parity_r2.png`, `r2_by_mode.png` | `surrogate/train_gp.py` | GP accuracy (R² per mode) |
+| `model_updating/data/dataset.npz` | `generate_dataset.py` | GP-driven generative training set: `theta` (physical `a`), `y` = f1..f5 |
+| `model_updating/checkpoints/<M>.pt` | `train.py` | trained generative model (weights + scalers + config) |
+| `model_updating/results/samples_<M>.csv` | `infer_obs.py` | pooled posterior samples `obs_id, a, b, E1, E2` (`a` physical, +24 applied) |
+| `model_updating/results/pairplot_<M>.png` | `infer_obs.py` | pooled posterior pair plot, truth overlaid |
+| `model_updating/results/recovery_<M>.png` | `infer_obs.py` | **hist + fitted-KDE**: recovered posterior vs true distribution (a, b) |
+| `model_updating/results/summary.csv` | `infer_obs.py` | per-obs × per-method: mean, 5/95% quantile, truth, CI coverage |
+| `model_updating/results/validation_surf7_vs_obsf6.png` | `validate_surrogate_f7.py` | held-out parity: surrogate f7 vs observed f6 |
+| `model_updating/results/validation_hist_surf7_vs_obsf6.png` | `validation_hist_pdf.py` | held-out distributional (hist + KDE) |
+| `model_updating/results/validation_hist_all_modes.png` | `validation_hist_all_modes.py` | all-mode distributional grid (f1–f5 in-sample, f7 held-out) |
+| `model_updating/results/mac_run<ID>.npz`, `mac_auto_run<ID>.png` | `mac_extract.py` | full-field auto-MAC matrix + heatmap |
+| `model_updating/fe_bias/plots/fe_vs_obs_*.png`, `fe_vs_obs_summary.csv` | `run_fe_vs_obs.py` | FE-vs-experiment frequency bias (30 structures) |
+
+**Frame note:** the GP/FE work in the **sketch frame** (`a` ∈ [266,286]); the
+generative dataset, checkpoints and all posterior outputs are in the
+**physical frame** (`a` ∈ [290,310] = sketch + `A_OFFSET` = 24). `infer_obs.py`
+/ `sample.py` apply the +24 on output via `config.to_physical_frame`; the
+surrogate validation subtracts it back (`th[:,0] -= C.A_OFFSET`) before
+calling the GP.
+
+**Regenerate plots + summary without re-running inference:**
+`python model_updating/regen_recovery.py` (rebuilds `recovery_<M>.png` +
+`summary.csv` from the existing `samples_<M>.csv`).
