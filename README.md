@@ -382,7 +382,7 @@ Stage numbers refer to the Appendix B runbook. `<M>` = one of
 | `dataset/train.npz` | `driver.py build` | FE training set: `theta`, 7 frequencies |
 | `surrogate/multioutput_gp.joblib`, `input_scaler.joblib` | `surrogate/train_gp.py` | trained multi-output GP + input scaler |
 | `surrogate/metrics.json`, `r2_scores.json`, `parity_r2.png`, `r2_by_mode.png` | `surrogate/train_gp.py` | GP accuracy (R² per mode) |
-| `model_updating/data/dataset.npz` | `generate_dataset.py` | GP-driven generative training set: `theta` (physical `a`), `y` = f1..f5 |
+| `model_updating/data/dataset.npz` | `generate_dataset.py` | GP-driven generative training set: `theta` (sketch `a` ∈ [266,286]), `y` = f1..f5 |
 | `model_updating/checkpoints/<M>.pt` | `train.py` | trained generative model (weights + scalers + config) |
 | `model_updating/results/samples_<M>.csv` | `infer_obs.py` | pooled posterior samples `obs_id, a, b, E1, E2` (`a` physical, +24 applied) |
 | `model_updating/results/pairplot_<M>.png` | `infer_obs.py` | pooled posterior pair plot, truth overlaid |
@@ -394,12 +394,16 @@ Stage numbers refer to the Appendix B runbook. `<M>` = one of
 | `model_updating/results/mac_run<ID>.npz`, `mac_auto_run<ID>.png` | `mac_extract.py` | full-field auto-MAC matrix + heatmap |
 | `model_updating/fe_bias/plots/fe_vs_obs_*.png`, `fe_vs_obs_summary.csv` | `run_fe_vs_obs.py` | FE-vs-experiment frequency bias (30 structures) |
 
-**Frame note:** the GP/FE work in the **sketch frame** (`a` ∈ [266,286]); the
-generative dataset, checkpoints and all posterior outputs are in the
-**physical frame** (`a` ∈ [290,310] = sketch + `A_OFFSET` = 24). `infer_obs.py`
-/ `sample.py` apply the +24 on output via `config.to_physical_frame`; the
-surrogate validation subtracts it back (`th[:,0] -= C.A_OFFSET`) before
-calling the GP.
+**Frame note:** the sketch parameter `a` (the Abaqus dimension d[0]) is the
+**adjustable** wing length ∈ [266,286]; the true physical half-span adds a
+**fixed 24 mm root component**, so `physical_a = sketch_a + A_OFFSET(=24)` ∈
+[290,310]. Everything internal stays in the **sketch frame** — the FE campaign,
+the GP surrogate, `dataset.npz`, and the trained `checkpoints` all use
+`a` ∈ [266,286] (so the GP is always evaluated inside its training domain).
+The **+24 is applied only at the very end**, on the posterior output of
+`infer_obs.py` / `sample.py` (via `config.to_physical_frame`), so reported
+`a` ≈ 300 matches the physical `obs_input.csv` truth. The surrogate validation
+therefore subtracts it back (`th[:,0] -= C.A_OFFSET`) before calling the GP.
 
 **Regenerate plots + summary without re-running inference:**
 `python model_updating/regen_recovery.py` (rebuilds `recovery_<M>.png` +
