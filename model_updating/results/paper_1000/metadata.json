@@ -1,0 +1,26 @@
+{
+  "seed": 20240722,
+  "methods": [
+    "cvae",
+    "cgan",
+    "cnf",
+    "cddpm",
+    "cfm"
+  ],
+  "n_obs": 30,
+  "n_samples_per_obs": 1000,
+  "n_samples_per_method": 30000,
+  "device": "cuda",
+  "python": "3.12.10",
+  "torch": "2.6.0+cu124",
+  "a_frame": "physical [290,310] (config.A_OFFSET=24 applied on output)",
+  "mode_map": {
+    "Mode 1": "surrogate_f1",
+    "Mode 2": "surrogate_f2",
+    "Mode 3": "surrogate_f3",
+    "Mode 4": "surrogate_f4",
+    "Mode 5": "surrogate_f5",
+    "Mode 6": "surrogate_f7"
+  },
+  "heldout_sixth": "surrogate_f7 vs observed f6_Hz"
+}

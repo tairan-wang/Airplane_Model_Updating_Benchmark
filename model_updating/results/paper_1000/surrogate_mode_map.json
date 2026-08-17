@@ -1,0 +1,35 @@
+{
+  "note": "paper Mode k -> original surrogate output index (0-based); original f6 (index 5) is hidden.",
+  "mode_map": {
+    "Mode 1": {
+      "surrogate_index": 0,
+      "surrogate_f": 1,
+      "r2": 0.9999775945770056
+    },
+    "Mode 2": {
+      "surrogate_index": 1,
+      "surrogate_f": 2,
+      "r2": 0.9999556987461893
+    },
+    "Mode 3": {
+      "surrogate_index": 2,
+      "surrogate_f": 3,
+      "r2": 0.9999784799844785
+    },
+    "Mode 4": {
+      "surrogate_index": 3,
+      "surrogate_f": 4,
+      "r2": 0.9999698026170003
+    },
+    "Mode 5": {
+      "surrogate_index": 4,
+      "surrogate_f": 5,
+      "r2": 0.9998858671919152
+    },
+    "Mode 6": {
+      "surrogate_index": 6,
+      "surrogate_f": 7,
+      "r2": 0.9998516968589956
+    }
+  }
+}
