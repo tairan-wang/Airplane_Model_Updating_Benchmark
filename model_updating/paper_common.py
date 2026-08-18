@@ -153,6 +153,28 @@ def bhattacharyya(p, q, grid):
     return float(-np.log(bc))
 
 
+# ---- central KDE bandwidth policy for all display curves ----
+# Multipliers on Scott's rule (h = factor * std * n^-1/5). Tune here once and
+# every posterior / target curve in every figure updates. Larger = smoother.
+POST_SMOOTH = 2.0        # posterior(-predictive) KDEs (large n -> tight Scott)
+TGT_SMOOTH = 0.85        # 30-sample target / measured KDEs (broad Scott)
+
+
+def _scott_h(x):
+    x = np.asarray(x, dtype=np.float64)
+    return float(x.std(ddof=1) * len(x) ** (-1.0 / 5.0))
+
+
+def kde_post(x, grid):
+    """Smoothed posterior KDE on `grid` (POST_SMOOTH x Scott)."""
+    return fixed_kde(x, grid, POST_SMOOTH * _scott_h(x))
+
+
+def kde_tgt(x, grid):
+    """Smoothed target/measured KDE on `grid` (TGT_SMOOTH x Scott)."""
+    return fixed_kde(x, grid, TGT_SMOOTH * _scott_h(x))
+
+
 def bdist_1d(method_samples, ref_samples, lo, hi, n_grid=4096):
     """Bhattacharyya distance between a method's pooled distribution and a
     reference distribution, using ONE Silverman bandwidth (from the reference),
@@ -197,10 +219,10 @@ def plot_umv(ax, updated, measured, xr, bins=18):
     edges = np.linspace(xr[0], xr[1], bins + 1)
     hu = ax.hist(updated, bins=edges, density=True, color=UPD_HIST,
                  alpha=0.55, edgecolor="#B26A8E", lw=0.4)[2]
-    lu, = ax.plot(grid, gaussian_kde(updated)(grid), color=UPD_PDF, lw=1.7)
+    lu, = ax.plot(grid, kde_post(updated, grid), color=UPD_PDF, lw=1.7)
     hm = ax.hist(measured, bins=edges, density=True, color=MEA_HIST,
                  alpha=0.50, edgecolor="#3FA9C0", lw=0.4)[2]
-    lm, = ax.plot(grid, gaussian_kde(measured)(grid), color=MEA_PDF, lw=1.7)
+    lm, = ax.plot(grid, kde_tgt(measured, grid), color=MEA_PDF, lw=1.7)
     ax.set_xlim(xr)
     return [hu[0], lu, hm[0], lm]
 

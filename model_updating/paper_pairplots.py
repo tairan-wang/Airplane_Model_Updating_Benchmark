@@ -57,7 +57,7 @@ def make_pairplot(theta, truth, method, mode, out_base):
                 if mode == "hist":
                     ax.hist(x, bins=60, range=xr, density=True,
                             color=LINE, alpha=0.30)
-                ax.plot(xs, _kde_curve(x, xs), color=LINE, lw=1.6)
+                ax.plot(xs, P.kde_post(x, xs), color=LINE, lw=1.6)
                 P.prior_flat(ax, xr)                      # uniform Prior PDF
                 if NAMES[i] in ("a", "b") and truth is not None:
                     tv = truth[:, 0] if NAMES[i] == "a" else truth[:, 1]
@@ -102,7 +102,7 @@ def make_pairplot(theta, truth, method, mode, out_base):
     from matplotlib.lines import Line2D
     leg = [Line2D([0], [0], color=LINE, lw=1.6, label="posterior"),
            Line2D([0], [0], color="red", marker="|", ls="none",
-                  label="reference (a, b)"),
+                  label="target (a, b)"),
            Line2D([0], [0], color=P.PRIOR_PDF, lw=1.2, ls="--",
                   label="Prior PDF")]
     axes[0, 0].legend(handles=leg, fontsize=7, frameon=False, loc="upper left")
@@ -135,15 +135,14 @@ def make_pairplot_compare(theta, truth, method, out_base):
                 xs = np.linspace(xr[0], xr[1], 400)
                 ax.hist(x, bins=60, range=xr, density=True, color=LINE,
                         alpha=0.30)
-                ax.plot(xs, _kde_curve(x, xs), color=LINE, lw=1.6,
+                ax.plot(xs, P.kde_post(x, xs), color=LINE, lw=1.6,
                         label="posterior")
                 P.prior_flat(ax, xr)                      # uniform Prior PDF
                 if NAMES[i] in ("a", "b"):
                     tv = truth_col[NAMES[i]]
                     ax.hist(tv, bins=15, range=xr, density=True, color=REF_C,
                             alpha=0.22)
-                    ax.plot(xs, _kde_curve(tv, xs), color=REF_C, lw=1.6,
-                            ls="-", label="reference")
+                    ax.plot(xs, P.kde_tgt(tv, xs), color=REF_C, lw=1.6, ls="-")
                 ax.set_xlim(xr)
                 ax.set_yticks([])
             else:
@@ -172,11 +171,11 @@ def make_pairplot_compare(theta, truth, method, out_base):
             ax.tick_params(labelsize=7)
     from matplotlib.lines import Line2D
     leg = [Line2D([0], [0], color=LINE, lw=1.6, label="posterior"),
-           Line2D([0], [0], color=REF_C, lw=1.6, label="reference (a, b)"),
+           Line2D([0], [0], color=REF_C, lw=1.6, label="target (a, b)"),
            Line2D([0], [0], color=P.PRIOR_PDF, lw=1.2, ls="--",
                   label="Prior PDF")]
     axes[0, 0].legend(handles=leg, fontsize=8, frameon=False)
-    fig.suptitle("%s | pooled posterior vs reference (histogram + KDE)"
+    fig.suptitle("%s | pooled posterior vs target (histogram + KDE)"
                  % P.METHOD_LABEL[method], fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     for ext in ("png", "pdf"):
